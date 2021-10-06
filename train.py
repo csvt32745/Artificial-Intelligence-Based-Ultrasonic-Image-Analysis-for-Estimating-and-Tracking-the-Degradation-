@@ -24,6 +24,8 @@ from all_model import WHICH_MODEL
 import random
 ## loss
 from train_src.loss_func import DiceBCELoss, IOUBCELoss, Temporal_Loss
+
+from config import config_parser_train
   
 def main(config):
     warnings.filterwarnings('ignore')
@@ -37,6 +39,7 @@ def main(config):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
+
     # parameter setting
     LR = config.learning_rate
     EPOCH = config.epoch
@@ -45,12 +48,16 @@ def main(config):
         frame_continue_num = 0
     else:
         frame_continue_num = list(map(int, config.continue_num))
+    
     net, model_name = WHICH_MODEL(config, frame_continue_num)
+    
     if config.data_parallel == 1:
         net = nn.DataParallel(net)
+
     now_time = datetime.now().strftime("%Y_%m_%d_%I:%M:%S")
     if not os.path.isdir(config.save_log_path):
         os.makedirs(config.save_log_path)
+
     if config.continuous == 1:
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+"_"+str(frame_continue_num)+"_gamma="+str(config.gamma)+".log")
         train_weight = torch.FloatTensor([10 / 1]).cuda()
@@ -60,15 +67,19 @@ def main(config):
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+".log")
         train_weight = torch.FloatTensor([10 / 1]).cuda()
         criterion_single = IOUBCELoss(weight = train_weight)
-    print("log_name ", log_name)
+    
+    print("log_name: ", log_name)
     logging.basicConfig(level=logging.DEBUG,
                         handlers = [logging.FileHandler(log_name, 'w', 'utf-8'),logging.StreamHandler()])
     logging.info(sys.argv)
+    
     net = net.cuda()
     threshold = config.threshold
     best_score = config.best_score
-    OPTIMIZER = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr = LR)
+    OPTIMIZER = optim.AdamW(filter(lambda p: p.requires_grad, net.parameters()), lr = LR)
     scheduler = optim.lr_scheduler.MultiStepLR(OPTIMIZER, milestones=[21], gamma = 0.1)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
+    
     if config.continuous == 0:
         logging.info("Single image version")
         train_loader = get_loader(image_path = config.train_data_path,
@@ -87,6 +98,7 @@ def main(config):
                                 augmentation_prob = 0.,
                                 shffule_yn = False)
         train_single(config, logging, net, model_name, threshold, best_score, criterion_single, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, now_time)
+    
     elif config.continuous == 1:
         logging.info("Continuous image version")
         train_loader, continue_num = get_continuous_loader(image_path = config.train_data_path, 
@@ -108,34 +120,10 @@ def main(config):
                                 shffule_yn = False,
                                 continue_num = frame_continue_num)
         logging.info("temporal frame: "+str(continue_num))
-        if config.which_model == "VNET":
+        if config.which_model in ["VNET"]:
             train_3D(config, logging, net,model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, continue_num, now_time)
         else:          
             train_continuous(config, logging, net,model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, continue_num, now_time)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, default="")
-    parser.add_argument('--which_model', type=str, default="TCSNET")
-    parser.add_argument('--batch_size', type=int, default=5)
-    parser.add_argument('--epoch', type=int, default=50)
-    parser.add_argument('--learning_rate', type=float, default=1e-4)
-    parser.add_argument('--save_model_path', type=str, default="./My_Image_Segmentation/models/")
-    parser.add_argument('--save_log_path', type=str, default="./My_Image_Segmentation/log/")
-    parser.add_argument('--best_score', type=float, default=0.7)
-    parser.add_argument('--threshold', type=float, default=0.5)
-    parser.add_argument('--train_data_path', type=str, default="Medical_data/train/")
-    parser.add_argument('--valid_data_path', type=str, default="Medical_data/valid/")
-    parser.add_argument('--test_data_path', type=str, default="Medical_data/test/")
-    parser.add_argument('--backbone', type=str, default="resnet34")
-    parser.add_argument('--augmentation_prob', type=float, default=0.0)
-    parser.add_argument('--continuous', type=int, default=0)
-    parser.add_argument('--draw_temporal', type=int, default=0)
-    parser.add_argument('--draw_image_path', type=str, default="Medical_data/test_image_output/")
-    parser.add_argument('--Unet_3D_channel', type=int, default= 8)
-    parser.add_argument('--continue_num', nargs="+", default=[1, 2, 3, 4, 5, 6, 7, 8])
-    parser.add_argument('--data_parallel', type=int, default=0)
-    parser.add_argument('--w_T_LOSS', type=int, default=1)
-    parser.add_argument('--gamma', type=float, default=1.0)
-    config = parser.parse_args()
-    main(config)
+    main(config_parser_train())
