@@ -28,6 +28,10 @@ class Scorer():
         tp = np.sum((temp_predict == 1) * (temp_GT == 1))
         iou = tp / (tp_fp + tp_fn - tp+e)
         return iou
+    def clear(self):
+        self.predict.clear()
+        self.label.clear()
+    
 class Losser():
     def __init__(self):
         self.loss = []
