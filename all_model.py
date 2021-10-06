@@ -61,7 +61,7 @@ def WHICH_MODEL(config, frame_continue_num):
         model_name = "VNet"
 
     elif config.which_model == "TCSNET":
-        net = New_DeepLabV3Plus_LSTM(1, len(frame_continue_num), config.backbone)
+        net = New_DeepLabV3Plus_LSTM(1, (3, 8), len(frame_continue_num), config.backbone)
         model_name = "TCSNet"+"_"+config.backbone
 
     # elif config.which_model == "UNETR":

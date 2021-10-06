@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -5,6 +6,9 @@ import warnings
 import segmentation_models_pytorch as smp
 from network.CLSTM import BDCLSTM
 from network.CLSTM import New_BDCLSTM, Temp_New_BDCLSTM
+
+from typing import Tuple
+
 class Unet_LSTM(nn.Module):
     def __init__(self, num_classes, continue_num = 8, backbone = "resnet34"):
         super().__init__()
@@ -185,22 +189,27 @@ class Linknet_LSTM(nn.Module):
         return temporal_mask, final_predict
 
 class New_DeepLabV3Plus_LSTM(nn.Module):
-    def __init__(self, num_classes, continue_num = 8, backbone = "resnet34"):
+    def __init__(self, num_classes,
+        hidden_channels: Tuple[int, int] = (3, 8),
+        continue_num = 8, backbone = "resnet34"
+        ):
+
         super().__init__()
         self.unet1 = smp.DeepLabV3Plus(
             encoder_name=backbone,        # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
             encoder_weights="imagenet",     # use `imagenet` pre-trained weights for encoder initialization
             in_channels=3,                  # model input channels (1 for gray-scale images, 3 for RGB, etc.)
-            classes=3,                      # model output channels (number of classes in your dataset)
+            classes=hidden_channels[0], # model output channels (number of classes in your dataset)
         )
         self.len = continue_num
-        self.lstm = New_BDCLSTM(length = continue_num, input_channels = 3, hidden_channels=[8])
+        self.lstm = New_BDCLSTM(length = continue_num, input_channels = hidden_channels[0], hidden_channels=[hidden_channels[1]])
     def forward(self, input, other_frame):
         temporal_mask = torch.tensor([]).cuda()
         continue_list = []
         for i in range(self.len):
             temp = self.unet1(other_frame[:,i:i+1,:,:,:].squeeze(dim = 1))
             continue_list.append(temp)
+        
         final_predict, temporal_mask = self.lstm(continue_list)
         return temporal_mask, final_predict
 
