@@ -103,8 +103,10 @@ def train_continuous(config, logging, net, model_name, threshold, best_score, cr
             Temporal_Losser.add(pn_loss.item())
             Single_Losser.add(loss.item())
             train_Scorer.add(SR, GT)
-            if i % 250 == 1:
-                logging.info('Epoch[%d] Training[%d/%d] F1: %.4f, IOU : %.4f, Temporal_Loss: %.3f, Single_Loss: %.3f' %(epoch+1, i,len(train_loader) ,train_Scorer.f1(), train_Scorer.iou(), Temporal_Losser.mean(), Single_Losser.mean()))
+            if i % 100 == 1:
+                iou, biou = train_Scorer.biou()
+                logging.info('Epoch[%d] Training[%d/%d] F1: %.4f, IOUs: (%.4f, %.4f), Temporal_Loss: %.3f, Single_Loss: %.3f' 
+                    %(epoch+1, i,len(train_loader) ,train_Scorer.f1(), iou, biou, Temporal_Losser.mean(), Single_Losser.mean()))
                 train_Scorer.clear()
 
         scheduler.step()
@@ -129,8 +131,8 @@ def train_continuous(config, logging, net, model_name, threshold, best_score, cr
                 Valid_Temporal_Losser.add(pn_loss.item())
                 Valid_Single_Losser.add(loss.item())
             f1 = valid_Scorer.f1()
-            iou = valid_Scorer.iou()
-            logging.info('Epoch [%d] [Valid] F1: %.4f, IOU: %.4f, Temporal_Loss: %.3f, Single_Loss: %.3f' %(epoch+1, f1, iou, Valid_Temporal_Losser.mean(), Valid_Single_Losser.mean()))
+            iou, biou = valid_Scorer.biou()
+            logging.info('Epoch [%d] [Valid] F1: %.4f, IOUs: (%.4f, %.4f), Temporal_Loss: %.3f, Single_Loss: %.3f' %(epoch+1, f1, iou, biou, Valid_Temporal_Losser.mean(), Valid_Single_Losser.mean()))
             if not os.path.isdir(os.path.join(config.save_model_path, now_time + model_name +str(continue_num))):
                 os.makedirs(os.path.join(config.save_model_path, now_time + model_name+str(continue_num)))
             if iou >= best_score or (epoch+1) % 5 == 0 or (epoch+1) <= 6:

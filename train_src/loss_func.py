@@ -1,7 +1,12 @@
+from os import stat
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+import numpy as np
+from types import MethodType
+import cv2
 
 class FocalLoss(nn.Module):
     def __init__(self, gamma=0, alpha=None, size_average=True):
@@ -71,10 +76,18 @@ class DiceBCELoss(nn.Module):
         return Dice_BCE
 
 class IOUBCELoss(nn.Module):
-    def __init__(self, weight=None, size_average=True):
+    def __init__(self, weight=None, size_average=True, boundary:Optional[int] = 15):
         super(IOUBCELoss, self).__init__()
         self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight)
-    def forward(self, inputs, targets, smooth=1):
+        if boundary:
+            assert boundary > 1, 'boundary width should > 1'
+            boundary_width = boundary*2+1
+            self.kernel = np.ones((boundary_width, boundary_width))
+            self.forward = self.boundary_forward
+        else:
+            self.forward = self.normal_forward
+    
+    def normal_forward(self, inputs, targets, smooth=1):
         BCE = self.BCE_loss(inputs.float(), targets.float())
         #comment out if your model contains a sigmoid or equivalent activation layer
         inputs = F.sigmoid(inputs)       
@@ -84,35 +97,73 @@ class IOUBCELoss(nn.Module):
         targets = targets.view(-1)
         
         #intersection is equivalent to True Positive count
-        #union is the mutually inclusive area of all labels & predictions 
+        #union is the mutually inclusive area of all labels & predictions
         intersection = (inputs * targets).sum()
         total = (inputs + targets).sum()
-        union = total - intersection 
+        union = total - intersection
         
         IoU = (intersection + smooth)/(union + smooth)
         IoU_loss = 1 - IoU
         return IoU_loss + BCE
+    
+    def mask_to_boundary(self, mask):
+        # mask: binary mask from pytorch
+        boundary = mask.cpu().numpy().astype(np.uint8)
+        boundary = np.stack([cv2.erode(m, self.kernel, borderType=cv2.BORDER_CONSTANT, borderValue=1) for m in boundary])
+        boundary = torch.from_numpy(boundary.astype(np.float32)).cuda()
+        return mask-boundary
+    
+    @staticmethod
+    def iou(x, y, smooth):
+        intersection = (x * y).sum()
+        total = (x + y).sum()
+        union = total - intersection
+        IoU = (intersection + smooth)/(union + smooth)
+        return IoU
+        
+
+    def boundary_forward(self, inputs: torch.Tensor, targets: torch.Tensor, smooth=1):
+        BCE = self.BCE_loss(inputs.float(), targets.float())
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = F.sigmoid(inputs)
+        
+        # extract boundary
+        boundary_input = self.mask_to_boundary((inputs>0.5).float()).view(-1)
+        boundary_target = self.mask_to_boundary(targets).view(-1)
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        #intersection is equivalent to True Positive count
+        #union is the mutually inclusive area of all labels & predictions
+        IoU = self.iou(inputs, targets, smooth)
+        BIoU = self.iou(inputs*boundary_input, targets*boundary_target, smooth)
+        IoU_loss = 1 - torch.min(BIoU, IoU)
+        return IoU_loss + BCE
+
 
 class Temporal_Loss(nn.Module):
     def __init__(self, size_average=True, weight=None, gamma = 1.0, distance = None):
         super(Temporal_Loss, self).__init__()
-        self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight)
-        self.gamma = gamma
-        self.distance_list = distance
-        self.max_rho = max(distance)
+        self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight, reduction = 'none')    
+        max_rho = max(distance)
+        self.temporal_weight = (1- ( abs(torch.FloatTensor(distance)) / (2*max_rho) )) ** gamma
+        self.temporal_weight = self.temporal_weight.cuda()
+    
     def forward(self, inputs, targets, smooth=1):
-        total_loss = 0.0
-        for i in range(len(self.distance_list)):
-            BCE = self.BCE_loss(inputs[:,i:i+1,:,:].float().contiguous(), targets[:,i:i+1,:,:].float().contiguous())
-            flat_inputs = F.sigmoid(inputs[:,i:i+1,:,:].contiguous())
-            flat_inputs = flat_inputs.view(-1)
-            flat_targets = targets[:,i:i+1,:,:].contiguous().view(-1) 
-            intersection = (flat_inputs * flat_targets).sum()
-            total = (flat_inputs + flat_targets).sum()
-            union = total - intersection
-            IoU = (intersection + smooth)/(union + smooth)
-            IoU_loss = 1 - IoU
-            weight = 1- ( abs(self.distance_list[i]) / (2*self.max_rho) )
-            weight = weight ** self.gamma
-            total_loss += weight*(BCE  + IoU_loss)
+        # (b, t, h, w)
+        axis=(0, 2, 3) # (b, t, h, w) -> (t)
+        targets = targets.float()
+        BCE = self.BCE_loss(inputs.float(), targets).mean(axis=axis) 
+
+        logits = F.sigmoid(inputs)
+        intersection = (logits * targets).sum(axis=axis)
+        total = (logits + targets).sum(axis=axis)
+        union = total - intersection
+        IoU = (intersection + smooth)/(union + smooth)
+        IoU_loss = 1 - IoU
+
+        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()
         return total_loss
