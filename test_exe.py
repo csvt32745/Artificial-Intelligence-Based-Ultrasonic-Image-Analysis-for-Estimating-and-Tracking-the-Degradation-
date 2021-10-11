@@ -19,190 +19,15 @@ import imageio
 import copy
 import warnings
 import matplotlib.pyplot as plt
+
+from network.UnetLSTM import New_DeepLabV3Plus_LSTM
+from network.Attention import *
+from all_model import WHICH_MODEL
+from config import config_parser_test
+
 # Batch x NumChannels x Height x Width
 # UNET --> BatchSize x 1 (3?) x 240 x 240
 # BDCLSTM --> BatchSize x 64 x 240 x240
-
-''' Class CLSTMCell.
-    This represents a single node in a CLSTM series.
-    It produces just one time (spatial) step output.
-'''
-
-
-class CLSTMCell(nn.Module):
-
-    # Constructor
-    def __init__(self, input_channels, hidden_channels,
-                 kernel_size, bias=True):
-        super(CLSTMCell, self).__init__()
-
-        assert hidden_channels % 2 == 0
-
-        self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
-        self.bias = bias
-        self.kernel_size = kernel_size
-        self.num_features = 4
-
-        self.padding = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(self.input_channels + self.hidden_channels,
-                              self.num_features * self.hidden_channels,
-                              self.kernel_size,
-                              1,
-                              self.padding)
-
-    # Forward propogation formulation
-    def forward(self, x, h, c):
-        # print('x: ', x.type)
-        # print('h: ', h.type)
-        if len(x.shape) == 3: # batch, H, W 
-            x = x.unsqueeze(dim = 1)
-        combined = torch.cat((x, h), dim=1)
-        A = self.conv(combined)
-
-        (Ai, Af, Ao, Ag) = torch.split(A,
-                                       A.size()[1] // self.num_features,
-                                       dim=1)
-
-        i = torch.sigmoid(Ai)     # input gate
-        f = torch.sigmoid(Af)     # forget gate
-        o = torch.sigmoid(Ao)     # output gate
-        g = torch.tanh(Ag)
-
-        c = c * f + i * g           # cell activation state
-        h = o * torch.tanh(c)     # cell hidden state
-
-        return h, c
-
-    @staticmethod
-    def init_hidden(batch_size, hidden_c, shape):
-        try:
-            return(Variable(torch.zeros(batch_size,
-                                    hidden_c,
-                                    shape[0],
-                                    shape[1])).to(device),
-               Variable(torch.zeros(batch_size,
-                                    hidden_c,
-                                    shape[0],
-                                    shape[1])).to(device))
-        except:
-            return(Variable(torch.zeros(batch_size,
-                                    hidden_c,
-                                    shape[0],
-                                    shape[1])),
-                    Variable(torch.zeros(batch_size,
-                                    hidden_c,
-                                    shape[0],
-                                    shape[1])))
-
-
-''' Class CLSTM.
-    This represents a series of CLSTM nodes (one direction)
-'''
-
-
-class CLSTM(nn.Module):
-    # Constructor
-    def __init__(self, input_channels=64, hidden_channels=[64],
-                 kernel_size=5, bias=True):
-        super(CLSTM, self).__init__()
-
-        # store stuff
-        self.input_channels = [input_channels] + hidden_channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.num_layers = len(hidden_channels)
-
-        self.bias = bias
-        self.all_layers = []
-
-        # create a node for each layer in the CLSTM
-        for layer in range(self.num_layers):
-            name = 'cell{}'.format(layer)
-            cell = CLSTMCell(self.input_channels[layer],
-                             self.hidden_channels[layer],
-                             self.kernel_size,
-                             self.bias)
-            setattr(self, name, cell)
-            self.all_layers.append(cell)
-
-    # Forward propogation
-    # x --> BatchSize x NumSteps x NumChannels x Height x Width
-    #       BatchSize x 2 x 64 x 240 x 240
-    def forward(self, x):
-        bsize, steps, _, height, width = x.size()
-        internal_state = []
-        outputs = []
-        for step in range(steps):
-            input = torch.squeeze(x[:, step, :, :, :], dim=1)
-            for layer in range(self.num_layers):
-                # populate hidden states for all layers
-                if step == 0:
-                    (h, c) = CLSTMCell.init_hidden(bsize,
-                                                   self.hidden_channels[layer],
-                                                   (height, width))
-                    internal_state.append((h, c))
-                # do forward
-                name = 'cell{}'.format(layer)
-                (h, c) = internal_state[layer]
-
-                input, c = getattr(self, name)(
-                    input, h, c)  # forward propogation call
-                internal_state[layer] = (input, c)
-            outputs.append(input)
-
-        #for i in range(len(outputs)):
-        #    print(outputs[i].size())
-        return outputs
-
-
-class New_BDCLSTM(nn.Module):
-    # Constructor
-    def __init__(self, length, input_channels=64, hidden_channels=[64],
-                 kernel_size=5, bias=True, num_classes=1):
-
-        super(New_BDCLSTM, self).__init__()
-        self.len = length
-        self.forward_net = CLSTM(
-            input_channels, hidden_channels, kernel_size, bias)
-        self.conv = []
-        for i in range(self.len):
-            self.conv.append(nn.Conv2d(hidden_channels[-1], num_classes, kernel_size=1).cuda())
-        # self.final_conv = nn.Conv2d(self.len, num_classes, kernel_size=1)
-        self.final_conv = nn.Conv3d(self.len, num_classes, kernel_size=1)
-    def forward(self, continue_list):
-        F_concanate_frame = torch.tensor([]).cuda()
-        for i in range(len(continue_list)):
-            F_concanate_frame = torch.cat((F_concanate_frame, continue_list[i].unsqueeze(dim = 1)), dim = 1)
-        yforward = self.forward_net(F_concanate_frame)
-        total_y = torch.tensor([]).cuda()
-        for i in range(self.len):
-            F_y = self.conv[i](yforward[i])
-            total_y = torch.cat( (total_y, F_y), dim = 1)
-        # current_y = self.final_conv(total_y)
-        current_y = self.final_conv(total_y.unsqueeze(dim = 2)).squeeze(dim = 1)
-        return current_y, total_y
-
-
-class New_DeepLabV3Plus_LSTM(nn.Module):
-    def __init__(self, num_classes, continue_num = 8, backbone = "resnet34"):
-        super().__init__()
-        self.unet1 = smp.DeepLabV3Plus(
-            encoder_name=backbone,        # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
-            encoder_weights="imagenet",     # use `imagenet` pre-trained weights for encoder initialization
-            in_channels=3,                  # model input channels (1 for gray-scale images, 3 for RGB, etc.)
-            classes=3,                      # model output channels (number of classes in your dataset)
-        )
-        self.len = continue_num
-        self.lstm = New_BDCLSTM(length = continue_num, input_channels = 3, hidden_channels=[8])
-    def forward(self, input, other_frame):
-        temporal_mask = torch.tensor([]).cuda()
-        continue_list = []
-        for i in range(self.len):
-            temp = self.unet1(other_frame[:,i:i+1,:,:,:].squeeze(dim = 1))
-            continue_list.append(temp)
-        final_predict, temporal_mask = self.lstm(continue_list)
-        return temporal_mask, final_predict
 
 def postprocess_img(o_img, final_mask_exist, continue_list):
     int8_o_img = np.array(o_img, dtype=np.uint8)
@@ -586,6 +411,7 @@ def vol_cal(frame_file_path):
             save_path = os.path.join(full_path_2, "Volume.jpg")
             plt.savefig(save_path)
             plt.close()
+
 if __name__ == "__main__":
     warnings.filterwarnings('ignore')
     print(os.getcwd())
@@ -600,25 +426,23 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--video_path', type=str, default="input_video")
-    parser.add_argument('--output_img_path', type=str, default="output_frame")
-    parser.add_argument('--model_path', type=str, default="pretrained_model.pt")
-    parser.add_argument('--output_path', type=str, default="output_prediction")
-    parser.add_argument('--keep_image', type= int, default=1)
-    parser.add_argument('--continuous', type=int, default=1)
-    parser.add_argument('--distance', type=int, default=50)
-    parser.add_argument('--interval_num', type=int, default=5)
-    parser.add_argument('--continue_num', nargs="+", default=[-3, -2, -1, 0, 1, 2, 3])
-    config = parser.parse_args()
+
+    config = config_parser_test()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     for num_file in LISTDIR(config.video_path):
+        # Input folder
         full_path = os.path.join(config.video_path, num_file)
+
         for video_file in LISTDIR(full_path):
+            # Patient ID (PXXX) folder
             full_path_2 = os.path.join(full_path, video_file)
+
             for video_file in LISTDIR(full_path_2):
                 video_path = os.path.join(full_path_2, video_file)
-                if video_path.split(".")[-1] == 'avi' or video_path.split(".")[-1] == 'mp4':
+                # Video info folder
+
+                if video_path.split(".")[-1] in ['avi', 'mp4']:
                     vidcap = cv2.VideoCapture(video_path)
                     success,image = vidcap.read()
                     count = 0
@@ -640,6 +464,7 @@ if __name__ == "__main__":
                         count += 1 
                         success,image = vidcap.read()
     print("video to frame finised!")
+
     o_files = read_dir_path(config.output_img_path, "original")
     for files in o_files:
         img = Image.open(files).convert('RGB')
@@ -649,6 +474,7 @@ if __name__ == "__main__":
         img = img.resize((416, 352))
         img.save(files)
     print("image croped finished!")
+
     with torch.no_grad():
         frame_continue_num = config.continue_num
         test_loader, continue_num = get_continuous_loader(image_path = config.output_img_path,
@@ -657,11 +483,17 @@ if __name__ == "__main__":
                                     augmentation_prob = 0.,
                                     shffule_yn = False,
                                     continue_num = frame_continue_num)
-        net = New_DeepLabV3Plus_LSTM(1, len(frame_continue_num), "resnet34")
-        model_name = "New_DeepLabV3Plus_LSTM"+"_"+"resnet34"
-        net.load_state_dict(torch.load("pretrained_model.pt", map_location='cpu'))
+        
+        # net = New_DeepLabV3Plus_LSTM(1, (3, 8), len(frame_continue_num), "resnet34")
+        net, model_name = WHICH_MODEL(config, frame_continue_num)
+        print(model_name)
+        # net = DeepLabV3Plus_SA(1, (3, 8), len(frame_continue_num))
+        # model_name = "New_DeepLabV3Plus_LSTM"+"_"+"resnet34"
+
+        # net.load_state_dict(torch.load(config.model_path, map_location='cpu'))        
+        # print("pretrain model loaded!")
+
         net = net.to(device)
-        print("pretrain model loaded!")
         test_w_postprocess(config, test_loader, net)
         print("image sequences prediction finished!")
         vol_result = vol_cal(config.output_path)

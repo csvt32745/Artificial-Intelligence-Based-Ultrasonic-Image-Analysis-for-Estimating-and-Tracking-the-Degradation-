@@ -76,11 +76,10 @@ class DiceBCELoss(nn.Module):
         return Dice_BCE
 
 class IOUBCELoss(nn.Module):
-    def __init__(self, weight=None, size_average=True, boundary:Optional[int] = 15):
+    def __init__(self, weight=None, size_average=True, boundary:int = 0):
         super(IOUBCELoss, self).__init__()
         self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight)
-        if boundary:
-            assert boundary > 1, 'boundary width should > 1'
+        if boundary > 1:
             boundary_width = boundary*2+1
             self.kernel = np.ones((boundary_width, boundary_width))
             self.forward = self.boundary_forward
@@ -120,7 +119,6 @@ class IOUBCELoss(nn.Module):
         union = total - intersection
         IoU = (intersection + smooth)/(union + smooth)
         return IoU
-        
 
     def boundary_forward(self, inputs: torch.Tensor, targets: torch.Tensor, smooth=1):
         BCE = self.BCE_loss(inputs.float(), targets.float())
@@ -147,16 +145,19 @@ class IOUBCELoss(nn.Module):
 class Temporal_Loss(nn.Module):
     def __init__(self, size_average=True, weight=None, gamma = 1.0, distance = None):
         super(Temporal_Loss, self).__init__()
-        self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight, reduction = 'none')    
+        self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight, reduction = 'none')
+        self.BCE_mean = nn.BCEWithLogitsLoss()
         max_rho = max(distance)
-        self.temporal_weight = (1- ( abs(torch.FloatTensor(distance)) / (2*max_rho) )) ** gamma
-        self.temporal_weight = self.temporal_weight.cuda()
-    
+        self.temporal_weight = (1- (torch.abs(torch.FloatTensor(distance)) / (2*max_rho) )) ** gamma
+        self.temporal_weight = nn.Parameter(self.temporal_weight)
+        self.temporal_mag = self.temporal_weight.mean()
+        
     def forward(self, inputs, targets, smooth=1):
         # (b, t, h, w)
         axis=(0, 2, 3) # (b, t, h, w) -> (t)
         targets = targets.float()
-        BCE = self.BCE_loss(inputs.float(), targets).mean(axis=axis) 
+        inputs = inputs.float()
+        BCE = self.BCE_loss(inputs, targets).mean(axis=axis) 
 
         logits = F.sigmoid(inputs)
         intersection = (logits * targets).sum(axis=axis)
@@ -165,5 +166,6 @@ class Temporal_Loss(nn.Module):
         IoU = (intersection + smooth)/(union + smooth)
         IoU_loss = 1 - IoU
 
-        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()
+        # temporal_dif = self.BCE_mean(inputs[:, :-1], logits[:, 1:])
+        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()# + temporal_dif * self.temporal_mag
         return total_loss

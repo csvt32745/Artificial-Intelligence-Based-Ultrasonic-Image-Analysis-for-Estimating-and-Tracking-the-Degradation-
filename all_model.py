@@ -4,6 +4,7 @@ from network.UnetLSTM import *
 from network.Vgg_FCN8s import Single_vgg_FCN8s
 from network.Unet3D  import UNet_3D_Seg, UNet_3D
 from network.new_Unet3d import New_UNet3d
+from network.Attention import *
 # from UNETR.unetr import UNETR
 
 def WHICH_MODEL(config, frame_continue_num):
@@ -63,6 +64,14 @@ def WHICH_MODEL(config, frame_continue_num):
     elif config.which_model == "TCSNET":
         net = New_DeepLabV3Plus_LSTM(1, (3, 8), len(frame_continue_num), config.backbone)
         model_name = "TCSNet"+"_"+config.backbone
+
+    elif config.which_model == "TEST":
+        net = DeepLabV3Plus_SA(1, (3, 8), len(frame_continue_num), config.backbone)
+        model_name = "TEST"
+
+    elif config.which_model == "TEST2":
+        net = DeepLabV3Plus_SA2(1, (3, 8), len(frame_continue_num), config.backbone)
+        model_name = "TEST2"
 
     # elif config.which_model == "UNETR":
     #     # net = New_DeepLabV3Plus_LSTM(1, len(frame_continue_num), config.backbone)

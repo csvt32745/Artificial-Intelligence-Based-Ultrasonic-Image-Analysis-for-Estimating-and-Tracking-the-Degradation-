@@ -18,7 +18,7 @@ from datetime import datetime
 import warnings
 import logging
 ##net work
-from train_src.train_code import train_single, train_continuous, train_3D
+from train_src.train_code import TemporalTrainer, SingleTrainer
 from train_src.dataloader import get_loader, get_continuous_loader
 from all_model import WHICH_MODEL
 import random
@@ -60,13 +60,13 @@ def main(config):
 
     if config.continuous == 1:
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+"_"+str(frame_continue_num)+"_gamma="+str(config.gamma)+".log")
-        train_weight = torch.FloatTensor([10 / 1]).cuda()
-        criterion_single = IOUBCELoss(weight = train_weight)
-        criterion_temporal = Temporal_Loss(weight = train_weight, gamma = config.gamma, distance = frame_continue_num)
+        train_weight = torch.FloatTensor([10 / 1])
+        criterion_single = IOUBCELoss(weight = train_weight, boundary=config.boundary_pixel).cuda()
+        criterion_temporal = Temporal_Loss(weight = train_weight, gamma = config.gamma, distance = frame_continue_num).cuda()
     elif config.continuous == 0:
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+".log")
         train_weight = torch.FloatTensor([10 / 1]).cuda()
-        criterion_single = IOUBCELoss(weight = train_weight)
+        criterion_single = IOUBCELoss(weight = train_weight, boundary=config.boundary_pixel).cuda()
     
     print("log_name: ", log_name)
     logging.basicConfig(level=logging.DEBUG,
@@ -77,8 +77,8 @@ def main(config):
     threshold = config.threshold
     best_score = config.best_score
     OPTIMIZER = optim.AdamW(filter(lambda p: p.requires_grad, net.parameters()), lr = LR)
-    scheduler = optim.lr_scheduler.MultiStepLR(OPTIMIZER, milestones=[21], gamma = 0.1)
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
+    # scheduler = optim.lr_scheduler.MultiStepLR(OPTIMIZER, milestones=[21], gamma = 0.1)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
     
     if config.continuous == 0:
         logging.info("Single image version")
@@ -97,7 +97,13 @@ def main(config):
                                 mode = 'test',
                                 augmentation_prob = 0.,
                                 shffule_yn = False)
-        train_single(config, logging, net, model_name, threshold, best_score, criterion_single, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, now_time)
+        trainer = SingleTrainer(
+            config, logging, net, 
+            model_name, threshold, best_score, 
+            criterion_single, OPTIMIZER, scheduler,
+            train_loader, valid_loader, 
+            EPOCH, now_time)
+        trainer.Train()
     
     elif config.continuous == 1:
         logging.info("Continuous image version")
@@ -120,10 +126,13 @@ def main(config):
                                 shffule_yn = False,
                                 continue_num = frame_continue_num)
         logging.info("temporal frame: "+str(continue_num))
-        if config.which_model in ["VNET"]:
-            train_3D(config, logging, net,model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, continue_num, now_time)
-        else:          
-            train_continuous(config, logging, net,model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER,scheduler, train_loader, valid_loader, test_loader, BATCH_SIZE, EPOCH, LR, continue_num, now_time)
+        trainer = TemporalTrainer(
+            config, logging, net, model_name,
+            threshold, best_score, 
+            criterion_single, criterion_temporal, OPTIMIZER, scheduler, 
+            train_loader, valid_loader,
+            EPOCH, continue_num, now_time)
+        trainer.Train()
 
 if __name__ == "__main__":
     main(config_parser_train())

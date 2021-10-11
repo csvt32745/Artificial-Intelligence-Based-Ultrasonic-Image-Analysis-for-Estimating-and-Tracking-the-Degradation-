@@ -26,6 +26,7 @@ def config_parser_train():
     parser.add_argument('--data_parallel', type=int, default=0)
     parser.add_argument('--w_T_LOSS', type=int, default=1)
     parser.add_argument('--gamma', type=float, default=1.0)
+    parser.add_argument('--boundary_pixel', type=int, default=0)
     config = parser.parse_args()
     return config
 
@@ -33,6 +34,8 @@ def config_parser_test():
     parser = configargparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True, help='config file path')
     
+    parser.add_argument('--which_model', type=str, default="TCSNET")
+    parser.add_argument('--backbone', type=str, default="resnet34")
     parser.add_argument('--video_path', type=str, default="input_video")
     parser.add_argument('--output_img_path', type=str, default="output_frame")
     parser.add_argument('--model_path', type=str, default="pretrained_model.pt")
@@ -43,3 +46,4 @@ def config_parser_test():
     parser.add_argument('--interval_num', type=int, default=5)
     parser.add_argument('--continue_num', nargs="+", default=[-3, -2, -1, 0, 1, 2, 3])
     config = parser.parse_args()
+    return config

@@ -1,203 +1,269 @@
 import numpy as np
 import os
 import torch
-import cv2
-from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
-from torchvision import transforms as T
-from PIL import Image
-import imageio
-from train_src.Score import Scorer, Losser
+
+from train_src.Score import DictLosser, Scorer, Losser
 import logging
-import time
-import sys
-## need to remove before submit
 import ipdb
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import argparse
 import segmentation_models_pytorch as smp
-import copy
-import random
 
-def train_single(config, logging, net, model_name, threshold, best_score, criterion, OPTIMIZER, scheduler, train_loader, valid_loader, test_loader, batch_size, EPOCH, LR, now_time):
-    Sigmoid_func = nn.Sigmoid()
-    for epoch in range(EPOCH):
-        net.train()
-        train_Scorer = Scorer(config)
-        train_Losser = Losser()
-        for i, (image, mask) in enumerate(tqdm(train_loader, position=0, leave=True)):
-            image = image.cuda()
-            mask = mask.cuda()
-            output = net(image).squeeze(dim = 1)
-            loss = criterion(output, mask.float())
-            output = Sigmoid_func(output)
-            SR = torch.where(output > threshold, 1, 0).cpu()
-            GT = mask.cpu()
-            OPTIMIZER.zero_grad() 
-            loss.backward()
-            OPTIMIZER.step()
-            train_Losser.add(loss.item())
-            if i % 250 == 0:
-                train_Scorer.add(SR, GT)
-                logging.info('Epoch[%d] Training[%d/%d] F1: %.4f, IOU : %.4f Loss: %.3f' %(epoch+1, i,len(train_loader) ,train_Scorer.f1(), train_Scorer.iou(), train_Losser.mean()))
-        scheduler.step()
-        with torch.no_grad():
-            net.eval()
-            valid_Scorer = Scorer(config)
-            valid_Losser = Losser()
-            for i, (image, mask) in enumerate(tqdm(valid_loader, position=0, leave=True)):
-                image = image.cuda()
-                mask = mask.cuda()
-                output = net(image).squeeze(dim = 1)
-                loss = criterion(output, mask.float())
-                output = Sigmoid_func(output)
-                SR = torch.where(output > threshold, 1, 0).cpu()
-                GT = mask.cpu()
-                valid_Scorer.add(SR, GT)
-                valid_Losser.add(loss.item())
-            f1 = valid_Scorer.f1()
-            iou = valid_Scorer.iou()
-            logging.info('Epoch [%d] [Valid] F1: %.4f, IOU: %.4f, Loss: %.3f' %(epoch+1, f1, iou, valid_Losser.mean()))
-            if not os.path.isdir(os.path.join(config.save_model_path, now_time+model_name)):
-                os.makedirs(os.path.join(config.save_model_path, now_time+model_name))
-            if iou >= best_score or (epoch+1) % 5 == 0 or (epoch+1) <= 6:
-                best_score = iou
-                net_save_path = os.path.join(config.save_model_path, now_time+model_name)
-                net_save_path = os.path.join(net_save_path, "Epoch="+str(epoch+1)+"_Score="+str(round(best_score,4))+".pt")
-                logging.info("Model save in "+ net_save_path)
-                best_net = net.state_dict()
-                torch.save(best_net,net_save_path)
+from abc import ABC, abstractclassmethod
 
-def train_continuous(config, logging, net, model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER, scheduler, train_loader, valid_loader, test_loader, batch_size, EPOCH, LR, continue_num, now_time):
-    Sigmoid_func = nn.Sigmoid()
-    for epoch in range(EPOCH):
-        train_Scorer = Scorer(config)
-        net.train()
-        Temporal_Losser = Losser()
-        Single_Losser = Losser()
-        for i, (file_name, image_list, mask_list) in enumerate(tqdm(train_loader, position=0, leave=True)):
-            pn_frame = image_list[:,1:,:,:,:]
-            frame = image_list[:,:1,:,:,:]
-            mask = mask_list[:,:1,:,:].squeeze(dim = 1).cuda()
-            pn_mask = mask_list[:,1:,:,:].cuda()
-            temporal_mask, output = net(frame, pn_frame)
-            # print(temporal_mask.shape, output.shape)
+class BaseTrainer(ABC):
+    def __init__(self, 
+        config, logger, net:nn.Module, model_name, 
+        threshold, best_score, 
+        optimizer:optim.Optimizer, scheduler, 
+        train_loader, valid_loader, 
+        epoch, now_time, log_interval=100):
+        
+        self.config = config
+        self.model_name = model_name
+        self.now_time = now_time
+        self.epoch = epoch
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.logger = logger
+        self.net = net
+        self.seg_threshold = threshold
+        self.best_score = best_score
+        self.train_loader = train_loader
+        self.valid_loader = valid_loader
 
-            output = output.squeeze(dim = 1)
-            loss = criterion_single(output, mask.float())
-            if config.w_T_LOSS == 1:
-                pn_loss = criterion_temporal(temporal_mask, pn_mask)
-            else:
-                pn_loss = torch.tensor(0).cuda()
+        self.scorer = Scorer(config)
+        self.losser = DictLosser()
 
-            GT = mask.cpu()
-            total_loss = loss + pn_loss
-            OPTIMIZER.zero_grad() 
+        self.logging_interval = log_interval
+        self.net_save_path = os.path.join(
+            self.config.save_model_path, self.model_name, self.now_time+self.model_name)
+    
+    
+    @abstractclassmethod
+    def UnpackInputData(self, x):
+        ''' 
+        Unpack data from loader into X(input), Y(GT)
+        output should be tuples
+        '''
+        file_name, image_list, mask_list = x        
+        return \
+            (image_list[:,:1,:,:,:], image_list[:,1:,:,:,:]),\
+            (mask_list[:,:1,:,:].squeeze(dim = 1).cuda(), mask_list[:,1:,:,:].cuda())
+        pass
+    
+    @abstractclassmethod
+    def Criterion(self, output, GT):
+        ''' 
+        calculate losses
+        return 
+            total_loss_tensor (for backward),
+            losses_dict (for logging)
+        '''
+        temporal_output, output = output
+        GT, temporal_GT = GT
+
+        output = output.squeeze(dim = 1) # need to delete?
+        loss = self.criterion_single(output, GT.float())
+
+        if self.config.w_T_LOSS == 1:
+            pn_loss = self.criterion_temporal(temporal_output, temporal_GT)
+            return (
+                loss + pn_loss,
+                {
+                    'SingleLoss': loss.item(),
+                    'TemporalLoss': pn_loss.item()
+                }
+            )
+        else:
+            pn_loss = torch.tensor(0).cuda()
+            return (
+                loss,
+                { 'SingleLoss': loss.item(), }
+            )
+        
+    @abstractclassmethod
+    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+        '''
+        record/collect data like images and metrics
+        '''
+        self.losser.add(loss_dict)
+        GT = GT[0].cpu()
+        SR = torch.where(F.sigmoid(output[1]) > self.seg_threshold, 1, 0).cpu()
+        self.scorer.add(SR, GT)
+
+    def SaveModel(self, save_path, file_name):
+        if not os.path.isdir(save_path):
+            os.makedirs(save_path)
+        best_net = self.net.state_dict()
+        torch.save(best_net, os.path.join(save_path, file_name))
+        logging.info("Model save in "+ save_path)
+
+    def IfSaveModel(self, epoch):
+        iou = self.scorer.iou()
+        if iou >= self.best_score or (epoch+1) % 5 == 0 or (epoch+1) <= 6:
+            self.best_score = iou
+            file_name = f"Epoch={epoch+1}_Score={self.best_score:.4f}.pt"
+            self.SaveModel(self.net_save_path, file_name)
+
+    @staticmethod
+    def MergeStringOfDict(metric_dict):
+        return ", ".join([f"{k}: {v:.4f}" for k, v in metric_dict.items()])
+
+    def Logging(self, epoch, prefix):
+        metric_dict = self.scorer.compute_all()
+        metric_dict.update(self.losser.mean())
+        # self.scorer.compute_all() | self.losser.mean() # for python3.9
+        
+        logging.info(
+            f'[{epoch+1}/{self.epoch}] {prefix} {self.MergeStringOfDict(metric_dict)}')
+        self.scorer.clear()
+        self.losser.clear()
+
+    def Train(self):
+        for epoch in range(self.epoch):
+            self.EpochTrain(epoch)
+            self.EpochValidation(epoch)
+            self.IfSaveModel(epoch)
+    
+    def EpochTrain(self, epoch):
+        self.net.train()
+        self.scorer.clear()
+        self.losser.clear()
+
+        for i, x in enumerate(tqdm(self.train_loader, position=0, leave=True, dynamic_ncols=True)):
+            x, GT = self.UnpackInputData(x)
+            output = self.net(*x) # untuple x
+            total_loss, loss_dict = self.Criterion(output, GT)
+
+            self.optimizer.zero_grad() 
             total_loss.backward()
-            OPTIMIZER.step()
-            output = Sigmoid_func(output)
-            SR = torch.where(output > threshold, 1, 0).cpu()
-            Temporal_Losser.add(pn_loss.item())
-            Single_Losser.add(loss.item())
-            train_Scorer.add(SR, GT)
-            if i % 100 == 1:
-                iou, biou = train_Scorer.biou()
-                logging.info('Epoch[%d] Training[%d/%d] F1: %.4f, IOUs: (%.4f, %.4f), Temporal_Loss: %.3f, Single_Loss: %.3f' 
-                    %(epoch+1, i,len(train_loader) ,train_Scorer.f1(), iou, biou, Temporal_Losser.mean(), Single_Losser.mean()))
-                train_Scorer.clear()
+            self.optimizer.step()
 
-        scheduler.step()
-        with torch.no_grad():
-            net.eval()
-            valid_Scorer = Scorer(config)
-            Valid_Temporal_Losser = Losser()
-            Valid_Single_Losser = Losser()
-            for i, (file_name, image_list, mask_list) in enumerate(tqdm(valid_loader, position=0, leave=True)):
-                pn_frame = image_list[:,1:,:,:,:]
-                frame = image_list[:,:1,:,:,:]
-                mask = mask_list[:,:1,:,:].squeeze(dim = 1).cuda()
-                pn_mask = mask_list[:,1:,:,:].cuda()
-                temporal_mask, output = net(frame, pn_frame)
-                output = output.squeeze(dim = 1)
-                loss = criterion_single(output, mask.float())
-                pn_loss = criterion_temporal(temporal_mask, pn_mask)
-                GT = mask.cpu() 
-                output = Sigmoid_func(output)
-                SR = torch.where(output > threshold, 1, 0).cpu()
-                valid_Scorer.add(SR, GT)
-                Valid_Temporal_Losser.add(pn_loss.item())
-                Valid_Single_Losser.add(loss.item())
-            f1 = valid_Scorer.f1()
-            iou, biou = valid_Scorer.biou()
-            logging.info('Epoch [%d] [Valid] F1: %.4f, IOUs: (%.4f, %.4f), Temporal_Loss: %.3f, Single_Loss: %.3f' %(epoch+1, f1, iou, biou, Valid_Temporal_Losser.mean(), Valid_Single_Losser.mean()))
-            if not os.path.isdir(os.path.join(config.save_model_path, now_time + model_name +str(continue_num))):
-                os.makedirs(os.path.join(config.save_model_path, now_time + model_name+str(continue_num)))
-            if iou >= best_score or (epoch+1) % 5 == 0 or (epoch+1) <= 6:
-                best_score = iou
-                net_save_path = os.path.join(config.save_model_path, now_time+model_name+str(continue_num))
-                net_save_path = os.path.join(net_save_path, "Epoch="+str(epoch+1)+"_Score="+str(round(best_score,4))+".pt")
-                logging.info("Model save in "+ net_save_path)
-                best_net = net.state_dict()
-                torch.save(best_net,net_save_path)
+            self.RecordTrainMetrics(epoch, x, GT, output, loss_dict)
 
-def train_3D(config, logging, net, model_name, threshold, best_score, criterion_single, criterion_temporal, OPTIMIZER, scheduler, train_loader, valid_loader, test_loader, batch_size, EPOCH, LR, continue_num, now_time):
-    Sigmoid_func = nn.Sigmoid()
-    for epoch in range(EPOCH):
-        net.train()
-        train_Scorer = Scorer(config)
-        Temporal_Losser = Losser()
-        Single_Losser = Losser()
-        for i, (file_name, image_list, mask_list) in enumerate(tqdm(train_loader, position=0, leave=True, ascii=True)):
-            pn_frame = image_list[:,1:,:,:,:]
-            frame = image_list[:,:1,:,:,:]
-            mask = mask_list[:,:1,:,:].squeeze(dim = 1).cuda()
-            pn_mask = mask_list[:,1:,:,:].cuda()
-            output = net(frame, pn_frame)
-            # print(output.shape)
+            if (i+1) % self.logging_interval == 0:
+                self.Logging(epoch, f'[Train {i+1}/{len(self.train_loader)}]')
             
-            output = output.squeeze(dim = 1)
-            loss = criterion_single(output, mask.float())
-            GT = mask.cpu()
-            OPTIMIZER.zero_grad() 
-            loss.backward()
-            OPTIMIZER.step()
-            output = Sigmoid_func(output)
-            SR = torch.where(output > threshold, 1, 0).cpu()
-            Temporal_Losser.add(loss.item())
-            if i % 250 == 0:
-                train_Scorer.add(SR, GT)
-                logging.info('Epoch[%d] Training[%d/%d] F1: %.4f, IOU : %.4f, Temporal_Loss: %.3f' %(epoch+1, i,len(train_loader) ,train_Scorer.f1(), train_Scorer.iou(), Temporal_Losser.mean()) )
-        scheduler.step()
-        with torch.no_grad():
-            net.eval()
-            valid_Scorer = Scorer(config)
-            Valid_Temporal_Losser = Losser()
-            Valid_Single_Losser = Losser()
-            for i, (file_name, image_list, mask_list) in enumerate(tqdm(valid_loader, position=0, leave=True)):
-                pn_frame = image_list[:,1:,:,:,:]
-                frame = image_list[:,:1,:,:,:]
-                mask = mask_list[:,:1,:,:].squeeze(dim = 1).cuda()
-                pn_mask = mask_list[:,1:,:,:].cuda()
-                output = net(frame, pn_frame)
-                output = output.squeeze(dim = 1)
-                loss = criterion_single(output, mask.float())
-                GT = mask.cpu() 
-                output = Sigmoid_func(output)
-                SR = torch.where(output > threshold, 1, 0).cpu()
-                valid_Scorer.add(SR, GT)
-                Valid_Temporal_Losser.add(loss.item())
-            f1 = valid_Scorer.f1()
-            iou = valid_Scorer.iou()
-            logging.info('Epoch [%d] [Valid] F1: %.4f, IOU: %.4f, Temporal_Loss: %.3f' %(epoch+1, f1, iou, Valid_Temporal_Losser.mean()))
-            if not os.path.isdir(os.path.join(config.save_model_path, now_time + model_name +str(continue_num))):
-                os.makedirs(os.path.join(config.save_model_path, now_time + model_name+str(continue_num)))
-            if iou >= best_score or (epoch+1) % 5 == 0 or (epoch+1) <= 6:
-                best_score = iou
-                net_save_path = os.path.join(config.save_model_path, now_time+model_name+str(continue_num))
-                net_save_path = os.path.join(net_save_path, "Epoch="+str(epoch+1)+"_Score="+str(round(best_score,4))+".pt")
-                logging.info("Model save in "+ net_save_path)
-                best_net = net.state_dict()
-                torch.save(best_net,net_save_path)
+                
+        self.scheduler.step()
+
+    @torch.no_grad()
+    def EpochValidation(self, epoch):
+        self.net.eval()
+        self.scorer.clear()
+        self.losser.clear()
+
+        for i, x in enumerate(tqdm(self.valid_loader, position=0, leave=True)):
+            x, GT = self.UnpackInputData(x)
+            output = self.net(*x) # untuple x
+            total_loss, loss_dict = self.Criterion(output, GT)
+            self.RecordTrainMetrics(epoch, x, GT, output, loss_dict)
+        
+        self.Logging(epoch, '[Valid]')
+
+class TemporalTrainer(BaseTrainer):
+    def __init__(self, config, logger, net, model_name, threshold, best_score, criterion_single, criterion_temporal, optimizer, scheduler, train_loader, valid_loader, epoch, continue_num, now_time):
+        super().__init__(
+            config, logger, net, 
+            model_name, threshold, best_score, 
+            optimizer, scheduler, train_loader, valid_loader, 
+            epoch, now_time)
+
+        self.criterion_single = criterion_single
+        self.criterion_temporal = criterion_temporal
+        self.continue_num = continue_num
+        self.net_save_path = os.path.join(
+            self.config.save_model_path, self.model_name, self.now_time+str(self.continue_num))
+    
+    def UnpackInputData(self, x):
+        ''' 
+        Unpack data from loader into X(input), Y(GT)
+        output should be tuples
+        '''
+        file_name, image_list, mask_list = x
+        return \
+            (image_list[:, :1], image_list[:,1:]),\
+            (mask_list[:,:1].squeeze(dim = 1).cuda(), mask_list[:,1:].cuda())
+        pass
+    
+    def Criterion(self, output, GT):
+        ''' 
+        calculate losses
+        return 
+            total_loss_tensor (for backward),
+            losses_dict (for logging)
+        '''
+        temporal_output, output = output
+        GT, temporal_GT = GT
+
+        output = output.squeeze(dim = 1) # need to delete?
+        loss = self.criterion_single(output, GT.float())
+
+        if self.config.w_T_LOSS == 1:
+            pn_loss = self.criterion_temporal(temporal_output, temporal_GT)
+            return (
+                loss + pn_loss,
+                {
+                    'SingleLoss': loss.item(),
+                    'TemporalLoss': pn_loss.item()
+                }
+            )
+        else:
+            pn_loss = torch.tensor(0).cuda()
+            return (
+                loss,
+                { 'SingleLoss': loss.item(), }
+            )
+        
+    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+        '''
+        record/collect data like images and metrics
+        '''
+        self.losser.add(loss_dict)
+        GT = GT[0].cpu()
+        SR = torch.where(F.sigmoid(output[1]) > self.seg_threshold, 1, 0).cpu()
+        self.scorer.add(SR, GT)
+
+class SingleTrainer(BaseTrainer):
+    def __init__(self, config, logger, net: nn.Module, model_name, threshold, best_score, criterion, optimizer: optim.Optimizer, scheduler, train_loader, valid_loader, epoch, now_time, log_interval=100):
+        super().__init__(
+            config, logger, net, 
+            model_name, threshold, best_score, 
+            optimizer, scheduler, 
+            train_loader, valid_loader, 
+            epoch, now_time, log_interval=log_interval)
+        
+        self.criterion = criterion
+
+    def UnpackInputData(self, x):
+        ''' 
+        Unpack data from loader into X(input), Y(GT)
+        output should be tuples
+        '''
+        return (x[0],), (x[1].cuda(),)
+    
+    def Criterion(self, output, GT):
+        ''' 
+        calculate losses
+        return 
+            total_loss_tensor (for backward),
+            losses_dict (for logging)
+        '''
+        loss = self.criterion(output.squeeze(1), GT[0].float())
+        return (
+            loss,
+            { 'Loss': loss.item(), }
+        )
+        
+    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+        '''
+        record/collect data like images and metrics
+        '''
+        self.losser.add(loss_dict)
+        SR = torch.where(F.sigmoid(output) > self.seg_threshold, 1, 0).cpu()
+        self.scorer.add(SR, GT[0].cpu())
+

@@ -5,10 +5,10 @@ import cv2
 from tqdm import tqdm
 
 class Scorer():
+    ''' Compute the score of masks '''
     def __init__(self, config):
         self.predict = []
         self.label = []
-        self.t = config.threshold
 
         self.boundary_pred = []
         self.boundary_label = []
@@ -63,7 +63,17 @@ class Scorer():
         biou = self.compute_iou(temp_predict*temp_mask_pred, temp_GT*temp_mask_label, e)
         iou = self.compute_iou(temp_predict, temp_GT, e)
         return iou, biou
-        
+    
+    def compute_all(self, e = 1):
+        ''' return a dict of losses '''
+        iou, biou = self.biou(e)
+        f1 = self.f1(e)
+        return {
+            'IoU': iou, 
+            'BIoU': biou,
+            'F1': f1
+            }
+
     def clear(self):
         self.predict.clear()
         self.label.clear()
@@ -73,8 +83,29 @@ class Scorer():
 class Losser():
     def __init__(self):
         self.loss = []
+
     def add(self, loss_item):
         self.loss.append(loss_item)
+
     def mean(self):
         return sum(self.loss) / len(self.loss)
-        
+
+    def clear(self):
+        self.loss.clear()
+
+class DictLosser():
+    def __init__(self):
+        self.loss_dict = {}
+    
+    def add(self, loss_item: dict):
+        if not self.loss_dict:
+            self.loss_dict = { k: [v] for k, v in loss_item.items() }
+            return
+        for k, v in loss_item.items():
+            self.loss_dict[k].append(v)
+    
+    def mean(self):
+        return { k: np.mean(v) for k, v in self.loss_dict.items() }
+    
+    def clear(self):
+        self.loss_dict.clear()
