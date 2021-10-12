@@ -120,8 +120,7 @@ class BaseTrainer(ABC):
         
         logging.info(
             f'[{epoch+1}/{self.epoch}] {prefix} {self.MergeStringOfDict(metric_dict)}')
-        self.scorer.clear()
-        self.losser.clear()
+        
 
     def Train(self):
         for epoch in range(self.epoch):
@@ -147,6 +146,8 @@ class BaseTrainer(ABC):
 
             if (i+1) % self.logging_interval == 0:
                 self.Logging(epoch, f'[Train {i+1}/{len(self.train_loader)}]')
+                self.scorer.clear()
+                self.losser.clear()
             
                 
         self.scheduler.step()

@@ -12,6 +12,8 @@ class Scorer():
 
         self.boundary_pred = []
         self.boundary_label = []
+        if config.boundary_pixel == 0:
+            config.boundary_pixel = 10
         boundary_width = config.boundary_pixel*2+1
         self.boundary_kernel = np.ones((boundary_width, boundary_width))
 
