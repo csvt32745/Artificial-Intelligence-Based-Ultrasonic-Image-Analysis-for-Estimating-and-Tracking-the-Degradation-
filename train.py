@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import os
 import torch
@@ -16,8 +17,9 @@ import matplotlib.pyplot as plt
 import argparse
 from datetime import datetime
 import warnings
-import logging
+# import logging
 ##net work
+from train_src.logger import WBLogger
 from train_src.train_code import TemporalTrainer, SingleTrainer
 from train_src.dataloader import get_loader, get_continuous_loader
 from all_model import WHICH_MODEL
@@ -68,10 +70,14 @@ def main(config):
         train_weight = torch.FloatTensor([10 / 1]).cuda()
         criterion_single = IOUBCELoss(weight = train_weight, boundary=config.boundary_pixel).cuda()
     
-    print("log_name: ", log_name)
-    logging.basicConfig(level=logging.DEBUG,
-                        handlers = [logging.FileHandler(log_name, 'w', 'utf-8'),logging.StreamHandler()])
-    logging.info(sys.argv)
+    # print("log_name: ", log_name)
+    # logging.basicConfig(level=logging.DEBUG,
+    #                     handlers = [logging.FileHandler(log_name, 'w', 'utf-8'), logging.StreamHandler()])
+    # msgfmt = '%(name)s: %(asctime)-15s | %(message)s'
+    # datfmt = '%H:%M:%S'
+    # logging.basicConfig(format=msgfmt, datefmt=datfmt)
+    logger = WBLogger(model_name, log_path=log_name, level=logging.DEBUG)
+    logger.info(sys.argv)
     
     net = net.cuda()
     threshold = config.threshold
@@ -81,7 +87,7 @@ def main(config):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
     
     if config.continuous == 0:
-        logging.info("Single image version")
+        logger.info("Single image version")
         train_loader = get_loader(image_path = config.train_data_path,
                                 batch_size = BATCH_SIZE,
                                 mode = 'train',
@@ -98,7 +104,7 @@ def main(config):
                                 augmentation_prob = 0.,
                                 shffule_yn = False)
         trainer = SingleTrainer(
-            config, logging, net, 
+            config, logger, net, 
             model_name, threshold, best_score, 
             criterion_single, OPTIMIZER, scheduler,
             train_loader, valid_loader, 
@@ -106,7 +112,7 @@ def main(config):
         trainer.Train()
     
     elif config.continuous == 1:
-        logging.info("Continuous image version")
+        logger.info("Continuous image version")
         train_loader, continue_num = get_continuous_loader(image_path = config.train_data_path, 
                             batch_size = BATCH_SIZE,
                             mode = 'train',
@@ -125,9 +131,9 @@ def main(config):
                                 augmentation_prob = 0.,
                                 shffule_yn = False,
                                 continue_num = frame_continue_num)
-        logging.info("temporal frame: "+str(continue_num))
+        logger.info("temporal frame: "+str(continue_num))
         trainer = TemporalTrainer(
-            config, logging, net, model_name,
+            config, logger, net, model_name,
             threshold, best_score, 
             criterion_single, criterion_temporal, OPTIMIZER, scheduler, 
             train_loader, valid_loader,

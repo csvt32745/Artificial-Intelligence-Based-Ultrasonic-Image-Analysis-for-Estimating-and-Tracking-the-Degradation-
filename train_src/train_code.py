@@ -5,8 +5,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 
+from train_src.logger import WBLogger
 from train_src.Score import DictLosser, Scorer, Losser
-import logging
 import ipdb
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -16,19 +16,19 @@ from abc import ABC, abstractclassmethod
 
 class BaseTrainer(ABC):
     def __init__(self, 
-        config, logger, net:nn.Module, model_name, 
+        config, logger: WBLogger , net: nn.Module, model_name, 
         threshold, best_score, 
-        optimizer:optim.Optimizer, scheduler, 
+        optimizer: optim.Optimizer, scheduler, 
         train_loader, valid_loader, 
         epoch, now_time, log_interval=100):
         
+        self.logger = logger
         self.config = config
         self.model_name = model_name
         self.now_time = now_time
         self.epoch = epoch
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.logger = logger
         self.net = net
         self.seg_threshold = threshold
         self.best_score = best_score
@@ -37,7 +37,8 @@ class BaseTrainer(ABC):
 
         self.scorer = Scorer(config)
         self.losser = DictLosser()
-
+        
+        self.iteration = 0
         self.logging_interval = log_interval
         self.net_save_path = os.path.join(
             self.config.save_model_path, self.model_name, self.now_time+self.model_name)
@@ -86,7 +87,7 @@ class BaseTrainer(ABC):
             )
         
     @abstractclassmethod
-    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+    def RecordMetrics(self, epoch, x, GT, output, loss_dict):
         '''
         record/collect data like images and metrics
         '''
@@ -100,7 +101,7 @@ class BaseTrainer(ABC):
             os.makedirs(save_path)
         best_net = self.net.state_dict()
         torch.save(best_net, os.path.join(save_path, file_name))
-        logging.info("Model save in "+ save_path)
+        self.logger.info("Model save in "+ save_path)
 
     def IfSaveModel(self, epoch):
         iou = self.scorer.iou()
@@ -109,18 +110,10 @@ class BaseTrainer(ABC):
             file_name = f"Epoch={epoch+1}_Score={self.best_score:.4f}.pt"
             self.SaveModel(self.net_save_path, file_name)
 
-    @staticmethod
-    def MergeStringOfDict(metric_dict):
-        return ", ".join([f"{k}: {v:.4f}" for k, v in metric_dict.items()])
-
-    def Logging(self, epoch, prefix):
+    def CollectMetrics(self):
         metric_dict = self.scorer.compute_all()
         metric_dict.update(self.losser.mean())
-        # self.scorer.compute_all() | self.losser.mean() # for python3.9
-        
-        logging.info(
-            f'[{epoch+1}/{self.epoch}] {prefix} {self.MergeStringOfDict(metric_dict)}')
-        
+        return metric_dict
 
     def Train(self):
         for epoch in range(self.epoch):
@@ -142,10 +135,13 @@ class BaseTrainer(ABC):
             total_loss.backward()
             self.optimizer.step()
 
-            self.RecordTrainMetrics(epoch, x, GT, output, loss_dict)
+            self.RecordMetrics(epoch, x, GT, output, loss_dict)
+            self.iteration += 1
 
             if (i+1) % self.logging_interval == 0:
-                self.Logging(epoch, f'[Train {i+1}/{len(self.train_loader)}]')
+                self.logger.LogTrainingDB(
+                    epoch, self.epoch, i, len(self.train_loader),
+                    self.iteration, self.CollectMetrics())
                 self.scorer.clear()
                 self.losser.clear()
             
@@ -162,9 +158,9 @@ class BaseTrainer(ABC):
             x, GT = self.UnpackInputData(x)
             output = self.net(*x) # untuple x
             total_loss, loss_dict = self.Criterion(output, GT)
-            self.RecordTrainMetrics(epoch, x, GT, output, loss_dict)
+            self.RecordMetrics(epoch, x, GT, output, loss_dict)
         
-        self.Logging(epoch, '[Valid]')
+        self.logger.LogValidationDB(epoch, self.epoch, self.iteration, self.CollectMetrics())
 
 class TemporalTrainer(BaseTrainer):
     def __init__(self, config, logger, net, model_name, threshold, best_score, criterion_single, criterion_temporal, optimizer, scheduler, train_loader, valid_loader, epoch, continue_num, now_time):
@@ -220,7 +216,7 @@ class TemporalTrainer(BaseTrainer):
                 { 'SingleLoss': loss.item(), }
             )
         
-    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+    def RecordMetrics(self, epoch, x, GT, output, loss_dict):
         '''
         record/collect data like images and metrics
         '''
@@ -260,7 +256,7 @@ class SingleTrainer(BaseTrainer):
             { 'Loss': loss.item(), }
         )
         
-    def RecordTrainMetrics(self, epoch, x, GT, output, loss_dict):
+    def RecordMetrics(self, epoch, x, GT, output, loss_dict):
         '''
         record/collect data like images and metrics
         '''
