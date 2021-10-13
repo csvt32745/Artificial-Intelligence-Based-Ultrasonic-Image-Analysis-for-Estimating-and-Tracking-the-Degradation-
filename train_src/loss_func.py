@@ -85,6 +85,7 @@ class IOUBCELoss(nn.Module):
             self.forward = self.boundary_forward
         else:
             self.forward = self.normal_forward
+
     
     def normal_forward(self, inputs, targets, smooth=1):
         BCE = self.BCE_loss(inputs.float(), targets.float())
@@ -143,7 +144,7 @@ class IOUBCELoss(nn.Module):
 
 
 class Temporal_Loss(nn.Module):
-    def __init__(self, size_average=True, weight=None, gamma = 1.0, distance = None):
+    def __init__(self, size_average=True, weight=None, gamma = 1.0, distance = None, boundary:int = 0):
         super(Temporal_Loss, self).__init__()
         self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight, reduction = 'none')
         self.BCE_mean = nn.BCEWithLogitsLoss()
@@ -152,19 +153,61 @@ class Temporal_Loss(nn.Module):
         self.temporal_weight = nn.Parameter(self.temporal_weight)
         self.temporal_mag = self.temporal_weight.mean()
         
-    def forward(self, inputs, targets, smooth=1):
+        self.axis = (0, 2, 3) # (b, t, h, w) -> (t)
+        if boundary > 1:
+            boundary_width = boundary*2+1
+            self.kernel = np.ones((boundary_width, boundary_width))
+            self.forward = self.boundary_forward
+        else:
+            self.forward = self.normal_forward
+    
+    def iou(self, x, y, smooth):
+        # return (t, )
+        intersection = (x * y).sum(axis=self.axis)
+        total = (x + y).sum(axis=self.axis)
+        union = total - intersection
+        IoU = (intersection + smooth)/(union + smooth)
+        return IoU
+
+    def mask_to_boundary(self, mask):
+        # mask: binary mask from pytorch
+        # (b, t, h, w)
+        b, t, h, w = mask.shape
+        boundary = mask.cpu().numpy().astype(np.uint8).reshape(-1, h, w)
+        boundary = np.stack([cv2.erode(m, self.kernel, borderType=cv2.BORDER_CONSTANT, borderValue=1) for m in boundary])
+        boundary = torch.from_numpy(boundary.reshape(b, t, h, w).astype(np.float32)).cuda()
+        return mask-boundary
+    
+    def normal_forward(self, inputs, targets, smooth=1):
+        # (b, t, h, w)
+        targets = targets.float()
+        inputs = inputs.float()
+        BCE = self.BCE_loss(inputs, targets).mean(axis=self.axis) 
+
+        logits = F.sigmoid(inputs)
+        
+        IoU = self.iou(logits, targets)
+        IoU_loss = 1 - IoU
+
+        # temporal_dif = self.BCE_mean(inputs[:, :-1], logits[:, 1:])
+        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()# + temporal_dif * self.temporal_mag
+        return total_loss
+    
+    def boundary_forward(self, inputs, targets, smooth=1):
         # (b, t, h, w)
         axis=(0, 2, 3) # (b, t, h, w) -> (t)
         targets = targets.float()
         inputs = inputs.float()
-        BCE = self.BCE_loss(inputs, targets).mean(axis=axis) 
+        BCE = self.BCE_loss(inputs, targets).mean(axis=self.axis) 
 
         logits = F.sigmoid(inputs)
-        intersection = (logits * targets).sum(axis=axis)
-        total = (logits + targets).sum(axis=axis)
-        union = total - intersection
-        IoU = (intersection + smooth)/(union + smooth)
-        IoU_loss = 1 - IoU
+        boundary_input = self.mask_to_boundary((inputs>0.5).float())
+        boundary_target = self.mask_to_boundary(targets)
+
+        IoU = self.iou(inputs, targets, smooth)
+        BIoU = self.iou(inputs*boundary_input, targets*boundary_target, smooth)
+
+        IoU_loss = 1 - torch.minimum(IoU, BIoU)
 
         # temporal_dif = self.BCE_mean(inputs[:, :-1], logits[:, 1:])
         total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()# + temporal_dif * self.temporal_mag

@@ -23,6 +23,23 @@ def preprocess_img(image):
     Norm_ = T.Normalize((0.486, 0.456, 0.406), (0.229, 0.224, 0.225))
     image = Norm_(image)
     return image
+
+def denormalize_img_rgb(image):
+    # shape: np.ndarray | torch.Tensor (..., 3), [0, 1]
+    dim = len(image.shape)
+    mean = [0.486, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    if isinstance(image, np.ndarray):
+        mean = np.array(mean)
+        std = np.array(std)
+    else:
+        mean = torch.FloatTensor(mean)
+        std = torch.FloatTensor(std)
+    shape = (*([1]*(dim-1)), 3) # len((1, 1, ..., 3)) = dim
+    mean = mean.reshape(shape)
+    std = std.reshape(shape)
+    return image*std + mean
+
 def preprocess_mask(mask):
     mask = np.array(mask)
     mask = label_mask(mask)

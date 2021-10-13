@@ -64,7 +64,9 @@ def main(config):
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+"_"+str(frame_continue_num)+"_gamma="+str(config.gamma)+".log")
         train_weight = torch.FloatTensor([10 / 1])
         criterion_single = IOUBCELoss(weight = train_weight, boundary=config.boundary_pixel).cuda()
-        criterion_temporal = Temporal_Loss(weight = train_weight, gamma = config.gamma, distance = frame_continue_num).cuda()
+        criterion_temporal = Temporal_Loss(
+            weight = train_weight, gamma = config.gamma,
+            distance = frame_continue_num, boundary=config.boundary_pixel).cuda()
     elif config.continuous == 0:
         log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+".log")
         train_weight = torch.FloatTensor([10 / 1]).cuda()
@@ -76,7 +78,7 @@ def main(config):
     # msgfmt = '%(name)s: %(asctime)-15s | %(message)s'
     # datfmt = '%H:%M:%S'
     # logging.basicConfig(format=msgfmt, datefmt=datfmt)
-    logger = WBLogger(model_name, log_path=log_name, level=logging.DEBUG)
+    logger = WBLogger(model_name, log_path=log_name, level=logging.DEBUG, config=config)
     logger.info(sys.argv)
     
     net = net.cuda()
