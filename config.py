@@ -27,6 +27,7 @@ def config_parser_train():
     parser.add_argument('--w_T_LOSS', type=int, default=1)
     parser.add_argument('--gamma', type=float, default=1.0)
     parser.add_argument('--boundary_pixel', type=int, default=0)
+    parser.add_argument('--smaller_dataset', type=float, default=1)
     config = parser.parse_args()
     return config
 

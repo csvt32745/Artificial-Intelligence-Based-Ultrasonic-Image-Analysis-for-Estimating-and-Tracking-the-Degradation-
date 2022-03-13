@@ -1,8 +1,8 @@
 import logging
 from typing import Optional
+from torchinfo import summary
 import wandb
 
-# TODO: Integrate wandb
 class WBLogger(logging.getLoggerClass()):
     def __init__(self, name: str, log_path: str, level, config):
         super().__init__(name, level=level)
@@ -56,4 +56,12 @@ class WBLogger(logging.getLoggerClass()):
 
         wandb.log(log_dict, step=iteration)
 
+    def LogSummary(self, log_dict: dict):
+        for k, v in log_dict.items():
+            self.run.summary[k] = v
     
+    def LogNet(self, net):
+        s = summary(net, verbose=0)
+        wandb.watch(net)
+        wandb.config['NetParams'] = s.total_params
+        wandb.config['NetSummary'] = str(s)

@@ -166,7 +166,7 @@ def get_loader(image_path, batch_size, mode, augmentation_prob, shffule_yn = Fal
                                   drop_last=True)
     return data_loader
 class Continuos_Image(data.Dataset):
-    def __init__(self, root, prob, mode = 'train', continuous_frame_num = [1, 2, 3, 4, 5, 6, 7, 8]):
+    def __init__(self, root, prob, mode = 'train', continuous_frame_num = [1, 2, 3, 4, 5, 6, 7, 8], data_ratio=1):
         self.root = root
         self.mode = mode
         self.augmentation_prob = prob
@@ -203,9 +203,17 @@ class Continuos_Image(data.Dataset):
                     self.image_paths[img_dir_file] = total_img_num
                     self.mask_paths[mask_dir_file] = total_mask_num
             temp_list = [*self.image_paths.values()]
-            self.image_paths_list = [val for sublist in temp_list for val in sublist]
-            temp_list = [*self.mask_paths.values()]
-            self.mask_paths_list = [val for sublist in temp_list for val in sublist]
+            temp_mask_list = [*self.mask_paths.values()]
+            if data_ratio < 1:
+                data_ratio = int(np.ceil(len(temp_list)*data_ratio))
+                # z = list(zip(temp_list, temp_mask_list))
+                # np.random.shuffle(z)
+                # temp_list, temp_mask_list = zip(*z)
+            else:
+                data_ratio = len(temp_list)
+            self.image_paths_list = [val for sublist in temp_list[:data_ratio] for val in sublist]
+            self.mask_paths_list = [val for sublist in temp_mask_list[:data_ratio] for val in sublist]
+            print(self.image_paths_list[100], self.mask_paths_list[100])
         if mode == "test":
             self.image_paths = {}
             for num_file in os.listdir(self.root):
@@ -258,8 +266,8 @@ class Continuos_Image(data.Dataset):
         return len(self.image_paths_list)
     def its_continue_num(self):
         return self.continuous_frame_num
-def get_continuous_loader(image_path, batch_size, mode, augmentation_prob, shffule_yn = False, continue_num = [1, 2, 3, 4, 5, 6, 7, 8]):
-    dataset = Continuos_Image(root = image_path, prob = augmentation_prob,mode = mode, continuous_frame_num = continue_num)
+def get_continuous_loader(image_path, batch_size, mode, augmentation_prob, shffule_yn = False, continue_num = [1, 2, 3, 4, 5, 6, 7, 8], smaller_dataset=1):
+    dataset = Continuos_Image(root = image_path, prob = augmentation_prob,mode = mode, continuous_frame_num = continue_num, data_ratio = smaller_dataset)
     data_loader = data.DataLoader(dataset=dataset,
 								  batch_size=batch_size,
 								  shuffle=shffule_yn,

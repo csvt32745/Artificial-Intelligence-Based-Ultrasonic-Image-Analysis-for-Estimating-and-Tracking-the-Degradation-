@@ -46,7 +46,7 @@ class BaseTrainer(ABC):
         self.logging_interval = log_interval
         self.net_save_path = os.path.join(
             self.config.save_model_path, self.model_name, self.now_time+self.model_name)
-    
+        self.logger.LogNet(self.net)
     
     @abstractclassmethod
     def UnpackInputData(self, x):
@@ -221,7 +221,7 @@ class TemporalTrainer(BaseTrainer):
 
         # Images
         if not isTraining:
-            loss = loss_dict['TemporalLoss']
+            loss = loss_dict['SingleLoss']
             worst_loss = self.image_buffer.get('WorstSample')
             if (not worst_loss) or (loss > worst_loss[0]):
                 self.image_buffer['WorstSample'] = (

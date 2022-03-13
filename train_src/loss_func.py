@@ -79,7 +79,8 @@ class IOUBCELoss(nn.Module):
     def __init__(self, weight=None, size_average=True, boundary:int = 0):
         super(IOUBCELoss, self).__init__()
         self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight)
-        if boundary > 1:
+        if boundary > 0:
+            print("Use BIoU Loss")
             boundary_width = boundary*2+1
             self.kernel = np.ones((boundary_width, boundary_width))
             self.forward = self.boundary_forward
@@ -147,14 +148,15 @@ class Temporal_Loss(nn.Module):
     def __init__(self, size_average=True, weight=None, gamma = 1.0, distance = None, boundary:int = 0):
         super(Temporal_Loss, self).__init__()
         self.BCE_loss = nn.BCEWithLogitsLoss(pos_weight = weight, reduction = 'none')
-        self.BCE_mean = nn.BCEWithLogitsLoss()
+        self.temporal_reg = nn.MSELoss()
         max_rho = max(distance)
         self.temporal_weight = (1- (torch.abs(torch.FloatTensor(distance)) / (2*max_rho) )) ** gamma
         self.temporal_weight = nn.Parameter(self.temporal_weight)
-        self.temporal_mag = self.temporal_weight.mean()
+        self.temporal_mag = 0.1
         
         self.axis = (0, 2, 3) # (b, t, h, w) -> (t)
-        if boundary > 1:
+        if boundary > 0:
+            print("Use BIoU Loss")
             boundary_width = boundary*2+1
             self.kernel = np.ones((boundary_width, boundary_width))
             self.forward = self.boundary_forward
@@ -186,29 +188,30 @@ class Temporal_Loss(nn.Module):
 
         logits = F.sigmoid(inputs)
         
-        IoU = self.iou(logits, targets)
+        IoU = self.iou(logits, targets, smooth)
         IoU_loss = 1 - IoU
 
-        # temporal_dif = self.BCE_mean(inputs[:, :-1], logits[:, 1:])
-        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()# + temporal_dif * self.temporal_mag
+        # temporal_reg = self.temporal_reg(logits[:, :-1], logits[:, 1:])
+        # total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum() + temporal_reg * self.temporal_mag
+        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()
         return total_loss
     
     def boundary_forward(self, inputs, targets, smooth=1):
         # (b, t, h, w)
-        axis=(0, 2, 3) # (b, t, h, w) -> (t)
         targets = targets.float()
         inputs = inputs.float()
         BCE = self.BCE_loss(inputs, targets).mean(axis=self.axis) 
 
         logits = F.sigmoid(inputs)
-        boundary_input = self.mask_to_boundary((inputs>0.5).float())
+        boundary_input = self.mask_to_boundary((logits>0.5).float())
         boundary_target = self.mask_to_boundary(targets)
 
-        IoU = self.iou(inputs, targets, smooth)
-        BIoU = self.iou(inputs*boundary_input, targets*boundary_target, smooth)
+        IoU = self.iou(logits, targets, smooth)
+        BIoU = self.iou(logits*boundary_input, targets*boundary_target, smooth)
 
         IoU_loss = 1 - torch.minimum(IoU, BIoU)
 
-        # temporal_dif = self.BCE_mean(inputs[:, :-1], logits[:, 1:])
-        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()# + temporal_dif * self.temporal_mag
+        # temporal_reg = self.temporal_reg(logits[:, :-1], logits[:, 1:])
+        # total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum() + temporal_reg * self.temporal_mag
+        total_loss = (self.temporal_weight*(BCE + IoU_loss)).sum()
         return total_loss

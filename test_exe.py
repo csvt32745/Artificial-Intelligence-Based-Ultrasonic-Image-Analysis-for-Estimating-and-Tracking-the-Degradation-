@@ -21,7 +21,8 @@ import warnings
 import matplotlib.pyplot as plt
 
 from network.UnetLSTM import New_DeepLabV3Plus_LSTM
-from network.Attention import *
+from network.models import *
+from train_src.dataloader import get_continuous_loader
 from all_model import WHICH_MODEL
 from config import config_parser_test
 
@@ -43,6 +44,7 @@ def postprocess_img(o_img, final_mask_exist, continue_list):
             return np.zeros((o_img.shape[0],o_img.shape[1]), dtype = np.uint8)
         else:
             return np.array(labels, dtype=np.uint8)
+
 def Check_continue(continue_list, postprocess_continue_list, bound_list, distance):
     start = 0
     end = 0
@@ -77,6 +79,7 @@ def Check_continue(continue_list, postprocess_continue_list, bound_list, distanc
         elif i in bound_list:
             check_only_list = False
     return postprocess_continue_list
+
 def Cal_mask_center(mask_img):
     middle_list = {}
     for key in mask_img:
@@ -91,6 +94,7 @@ def Cal_mask_center(mask_img):
                 mean_y = 0
             middle_list[key].append([mean_x, mean_y])
     return middle_list
+
 def Cal_Local_Global_mean(middle_list, interval_num = 5):
     mean_list = {}
     global_mean_list = {}
@@ -148,10 +152,10 @@ def Final_postprocess(middle_list, mean_list, global_mean_list, interval_num , d
 
 
 def LISTDIR(path):
-    d_list = []
-    for f in os.listdir(path):
-        if not f.startswith('.'):
-            d_list.append(f)
+    d_list = [f for f in os.listdir(path) if not f.startswith('.')]
+    # for f in os.listdir(path):
+    #     if not f.startswith('.'):
+    #         d_list.append(f)
     d_list.sort()
     return d_list
 
@@ -164,12 +168,14 @@ def read_dir_path(path, dir_str):
             for files in LISTDIR(dir_path):
                 list_dir.append(os.path.join(dir_path, files))
     return list_dir
+
 def test_wo_postprocess(config, test_loader, net):
     if not os.path.isdir(config.output_path):
         print("os.makedirs "+ config.output_path)
         os.makedirs(config.output_path)
     OUTPUT_IMG(config, test_loader, net, False)
     MERGE_VIDEO(config)
+
 def test_w_postprocess(config, test_loader, net):
     net.eval()
     if not os.path.isdir(config.output_path):
@@ -205,6 +211,7 @@ def test_w_postprocess(config, test_loader, net):
             else:
                 mask_img[dict_path].append(SR)
         bound_list.append(i)
+        
         postprocess_continue_list = copy.deepcopy(continue_list)
         postprocess_continue_list = Check_continue(continue_list, postprocess_continue_list, bound_list, distance = 30)
         middle_list = Cal_mask_center(mask_img)
@@ -212,8 +219,10 @@ def test_w_postprocess(config, test_loader, net):
         final_mask_exist = Final_postprocess(middle_list, mean_list, global_mean_list, config.interval_num, config.distance)
         OUTPUT_IMG(config, test_loader, net, True, final_mask_exist, postprocess_continue_list)
         MERGE_VIDEO(config)
-def frame2video(path):
-    video_path = (path[:-6])
+
+def frame2video(path, video_path=None):
+    if video_path is None:
+        video_path = (path[:-6])
     videoWriter = cv2.VideoWriter(os.path.join(video_path,"merge_video.mp4"), cv2.VideoWriter_fourcc(*'MP4V'), 12.0, (832, 352))
     for frame_files in  LISTDIR(path):
         if frame_files[-3:] == "jpg":
@@ -221,8 +230,10 @@ def frame2video(path):
             frame = cv2.imread(full_path)
             videoWriter.write(frame)
     videoWriter.release()
-def film_frame2video(path):
-    video_path = (path[:-7])
+
+def film_frame2video(path, video_path=None):
+    if video_path is None:
+        video_path = (path[:-7])
     videoWriter = cv2.VideoWriter(os.path.join(video_path,"film_video.mp4"), cv2.VideoWriter_fourcc(*'MP4V'), 12.0, (416, 352))
     for frame_files in  LISTDIR(path):
         if frame_files[-3:] == "jpg":
@@ -230,6 +241,7 @@ def film_frame2video(path):
             frame = cv2.imread(full_path)
             videoWriter.write(frame)
     videoWriter.release()
+
 def OUTPUT_IMG(config, test_loader, net, postprocess = False, final_mask_exist = [], postprocess_continue_list = []):
     if postprocess == False:
         print("No postprocessing!!")
@@ -243,9 +255,11 @@ def OUTPUT_IMG(config, test_loader, net, postprocess = False, final_mask_exist =
         for i, (crop_image ,file_name, image) in enumerate(tqdm(test_loader)):
             pn_frame = image[:,1:,:,:,:]
             frame = image[:,:1,:,:,:]
+            
             temporal_mask, output = net(frame, pn_frame)
             output = output.squeeze(dim = 1)
             temporal_mask = Sigmoid_func(temporal_mask)
+
             temp = [config.output_path] + file_name[0].split("/")[-4:-2]
             write_path = "/".join(temp)
             img_name = file_name[0].split("/")[-1]
@@ -257,24 +271,34 @@ def OUTPUT_IMG(config, test_loader, net, postprocess = False, final_mask_exist =
                 os.makedirs(write_path+"/merge")
             if not os.path.isdir(write_path+"/vol_mask"):
                 os.makedirs(write_path+"/vol_mask")
+            if not os.path.isdir(write_path+"/prob_heat"):
+                os.makedirs(write_path+"/prob_heat")
+
             output = Sigmoid_func(output)
             crop_image = crop_image.squeeze().data.numpy()
             origin_crop_image = crop_image.copy()
+            # prob_heatmap = output.squeeze().cpu().data.numpy()
             SR = torch.where(output > threshold, 1, 0).squeeze().cpu().data.numpy()
             if postprocess == True:
                 SR = postprocess_img(SR, final_mask_exist[i], postprocess_continue_list[i])
                 SR = np.where(SR > 0.5, 1, 0)
             heatmap = np.uint8(110 * SR)
             heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_HOT)
+            # prob_heatmap = np.uint8(255*prob_heatmap)
+            # prob_heatmap = cv2.applyColorMap(prob_heatmap, cv2.COLORMAP_JET)
+            
             heat_img = heatmap*0.6+origin_crop_image
+            # prob_img = prob_heatmap*0.6+origin_crop_image
             merge_img = np.hstack([origin_crop_image, heat_img])
             cv2.imwrite(os.path.join(write_path+"/merge", img_name), merge_img)
             imageio.imwrite(os.path.join(write_path+"/original", img_name), origin_crop_image)
             cv2.imwrite(os.path.join(write_path+"/forfilm", img_name), heat_img)
+            # cv2.imwrite(os.path.join(write_path+"/prob_heat", img_name), prob_img)
             cv2.imwrite(os.path.join(write_path+"/vol_mask", img_name), SR*255)
         tEnd = time.time()
         print("Cost time(seconds)= "+str(tEnd-tStart))
-def MERGE_VIDEO(config):
+
+def MERGE_VIDEO(config, copy_height=True):
     for dir_files in (LISTDIR(config.output_path)):
         full_path = os.path.join(config.output_path, dir_files)
         o_full_path = os.path.join(config.output_img_path, dir_files)
@@ -284,8 +308,10 @@ def MERGE_VIDEO(config):
                 full_path_3 = os.path.join(full_path, num_files+"/forfilm")
                 height_path = os.path.join(o_full_path, num_files, "height.txt")
                 s_height_path = os.path.join(full_path, num_files)
-                os.system("cp "+height_path+" "+s_height_path)
+                if copy_height: os.system("cp "+height_path+" "+s_height_path)
                 frame2video(full_path_2)
+                # full_path_4 = os.path.join(full_path, num_files+"/prob_heat")
+                # frame2video(full_path_4, video_path=full_path_4)
                 film_frame2video(full_path_3)
                 if config.keep_image == 0:
                     full_path_3 = os.path.join(full_path, num_files+"/original")
@@ -293,82 +319,6 @@ def MERGE_VIDEO(config):
                     full_path_3 = os.path.join(full_path, num_files+"/forfilm")
                     os.system("rm -r "+full_path_3)
 
-def read_img_continuous(continuous_frame_num, temp_img_list ,img_dir_file, index):
-    list_num = []
-    frame_num = int(temp_img_list[index].split("/")[-1].split(".")[0][-3:])
-    for check_frame in continuous_frame_num:
-        if frame_num + check_frame < 0:
-            file_path = img_dir_file+"/frame" + "%03d" % 0 + ".jpg"
-        elif frame_num + check_frame > len(temp_img_list) - 1:
-            file_path = img_dir_file+"/frame"+ "%03d" % (len(temp_img_list) - 1) + ".jpg"
-        else:
-            file_path = img_dir_file+ "/frame"+ "%03d" % (frame_num + check_frame)+ ".jpg"
-        if not os.path.isfile(file_path):
-            file_path = img_dir_file+"/frame" + "%03d"% frame_num+".jpg"
-        list_num.append(file_path)
-    return frame_num, list_num
-
-def test_preprocess_img(image):
-    crop_origin_image = image
-    Transform = []
-    Transform.append(T.ToTensor())
-    Transform = T.Compose(Transform)
-    image = Transform(image)
-    Norm_ = T.Normalize((0.486, 0.456, 0.406), (0.229, 0.224, 0.225))
-    image = Norm_(image)
-    return crop_origin_image, image
-
-class Continuos_Image(data.Dataset):
-    def __init__(self, root, prob, mode = 'train', continuous_frame_num = [1, 2, 3, 4, 5, 6, 7, 8]):
-        self.root = root
-        self.mode = mode
-        self.augmentation_prob = prob
-        self.continuous_frame_num = continuous_frame_num
-        if mode == "test":
-            self.image_paths = {}
-            for num_file in os.listdir(self.root):
-                full_path = os.path.join(self.root, num_file)
-                for dir_file in os.listdir(full_path):
-                    temp_img_list = []
-                    full_path_2 = os.path.join(full_path, dir_file)
-                    for original_file in os.listdir(os.path.join(full_path_2, "original")):
-                        full_path_3 = os.path.join(os.path.join(full_path_2, "original", original_file))
-                        temp_img_list.append(full_path_3)
-                    temp_img_list.sort(key = lambda x : (x.split("/")[-1].split("_")[0]))
-                    img_dir_file = "/".join(temp_img_list[0].split("/")[:-1])
-                    total_img_num = []
-                    for i in range(len(temp_img_list)):
-                        frame_num, list_num = read_img_continuous(self.continuous_frame_num, temp_img_list, img_dir_file, i) 
-                        order_num = [img_dir_file+ "/frame" + "%03d"% frame_num+".jpg"] + list_num
-                        total_img_num.append(order_num)
-                    self.image_paths[img_dir_file] = total_img_num
-            temp_list = [*self.image_paths.values()]
-            self.image_paths_list = [val for sublist in temp_list for val in sublist]
-        print("image count in {} path :{}".format(self.mode,len(self.image_paths_list)))
-    def __getitem__(self, index):
-        dist_x = 416
-        dist_y = 352
-        if self.mode == "test":
-            image_list = self.image_paths_list[index]
-            image = torch.tensor([]).to(device)
-            for i, image_path in enumerate(image_list):
-                i_image = Image.open(image_path).convert('RGB')
-                image = torch.cat((image, test_preprocess_img(i_image)[1].to(device)), dim = 0)
-                if i == 0:
-                    o_image = np.array(test_preprocess_img(i_image)[0])
-            image = image.view(-1, 3, dist_y, dist_x)
-            return o_image, image_list[0], image
-    def __len__(self):
-        return len(self.image_paths_list)
-    def its_continue_num(self):
-        return self.continuous_frame_num
-def get_continuous_loader(image_path, batch_size, mode, augmentation_prob, shffule_yn = False, continue_num = [1, 2, 3, 4, 5, 6, 7, 8]):
-    dataset = Continuos_Image(root = image_path, prob = augmentation_prob,mode = mode, continuous_frame_num = continue_num)
-    data_loader = data.DataLoader(dataset=dataset,
-								  batch_size=batch_size,
-								  shuffle=shffule_yn,
-                                  drop_last=True )
-    return data_loader, dataset.its_continue_num()
 
 def vol_cal(frame_file_path):
     pixel_area = (1 / 85)**2  # h = 10/85(mm)

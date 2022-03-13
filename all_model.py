@@ -2,9 +2,9 @@ import segmentation_models_pytorch as smp
 import torch
 from network.UnetLSTM import *
 from network.Vgg_FCN8s import Single_vgg_FCN8s
-from network.Unet3D  import UNet_3D_Seg, UNet_3D
+# from network.Unet3D  import UNet_3D_Seg, UNet_3D
 from network.new_Unet3d import New_UNet3d
-from network.Attention import *
+from network.models import *
 # from UNETR.unetr import UNETR
 
 def WHICH_MODEL(config, frame_continue_num):
@@ -66,13 +66,30 @@ def WHICH_MODEL(config, frame_continue_num):
         model_name = "TCSNet"+"_"+config.backbone
 
     elif config.which_model == "TEST":
-        net = DeepLabV3Plus_SA(1, (3, 8), len(frame_continue_num), config.backbone)
-        model_name = "TEST"
+        net = DeepLabV3Plus_LSTM(len(frame_continue_num), config.backbone)
+        model_name = net._get_name()
 
     elif config.which_model == "TEST2":
-        net = DeepLabV3Plus_SA2(1, (3, 8), len(frame_continue_num), config.backbone)
-        model_name = "TEST2"
+        # net = DeepLabV3Plus_TokenViT(len(frame_continue_num), config.backbone)
+        net = DeepLabV3Plus_TTT(len(frame_continue_num))
+        model_name = net._get_name()
+        # model_name = "TEST2"
 
+    elif str(config.which_model).split('/')[0] == 'baseline':
+        # net = TemporalBaseline(str(config.which_model).split('/')[1], len(frame_continue_num))
+        
+        # net = SwinTokener(len(frame_continue_num))
+        # model_name = net._get_name()
+
+        tag = str(config.which_model).split('/')[1]
+        # tag = 'ttt_fpn'
+        # tag = 'tokener'
+        net = SwinTokener(len(frame_continue_num), up_conv=tag)
+        model_name = net._get_name() + f"_{tag}"
+
+        # net = Swin3D(len(frame_continue_num))
+        # model_name = 'Swin3D'
+    
     # elif config.which_model == "UNETR":
     #     # net = New_DeepLabV3Plus_LSTM(1, len(frame_continue_num), config.backbone)
     #     net = UNETR(

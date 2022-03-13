@@ -1,9 +1,9 @@
-import logging
-import numpy as np
+import sys
 import os
+import numpy as np
+import logging
 import torch
 import cv2
-import sys
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
@@ -41,7 +41,7 @@ def main(config):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = False
-
+    
     # parameter setting
     LR = config.learning_rate
     EPOCH = config.epoch
@@ -68,7 +68,6 @@ def main(config):
             weight = train_weight, gamma = config.gamma,
             distance = frame_continue_num, boundary=config.boundary_pixel).cuda()
     elif config.continuous == 0:
-        log_name = os.path.join(config.save_log_path, now_time+"_"+model_name+".log")
         train_weight = torch.FloatTensor([10 / 1]).cuda()
         criterion_single = IOUBCELoss(weight = train_weight, boundary=config.boundary_pixel).cuda()
     
@@ -85,8 +84,8 @@ def main(config):
     threshold = config.threshold
     best_score = config.best_score
     OPTIMIZER = optim.AdamW(filter(lambda p: p.requires_grad, net.parameters()), lr = LR)
-    # scheduler = optim.lr_scheduler.MultiStepLR(OPTIMIZER, milestones=[21], gamma = 0.1)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
+    scheduler = optim.lr_scheduler.MultiStepLR(OPTIMIZER, milestones=[5], gamma = 0.2)
+    # scheduler = optim.lr_scheduler.CosineAnnealingLR(OPTIMIZER, T_max=config.epoch, eta_min=1e-6, verbose=True)
     
     if config.continuous == 0:
         logger.info("Single image version")
@@ -120,7 +119,8 @@ def main(config):
                             mode = 'train',
                             augmentation_prob = config.augmentation_prob,
                             shffule_yn = True,
-                            continue_num = frame_continue_num)
+                            continue_num = frame_continue_num,
+                            smaller_dataset=config.smaller_dataset)
         valid_loader, continue_num = get_continuous_loader(image_path = config.valid_data_path,
                                 batch_size = 1,
                                 mode = 'valid',
@@ -134,6 +134,7 @@ def main(config):
                                 shffule_yn = False,
                                 continue_num = frame_continue_num)
         logger.info("temporal frame: "+str(continue_num))
+        # raise
         trainer = TemporalTrainer(
             config, logger, net, model_name,
             threshold, best_score, 
